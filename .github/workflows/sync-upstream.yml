@@ -1,0 +1,101 @@
+name: Sync upstream hardened_malloc
+
+# Adds new GrapheneOS/hardened_malloc commits on top of main without editing any code by hand.
+# Branches: `upstream` mirrors GrapheneOS main; `main` is the MXeneOS branch the manifest pins.
+# It only opens a pull request (never merges) and opens an issue when something needs a person.
+# Pushing this file needs a token with the `workflow` scope (or add it in the web UI).
+
+on:
+  schedule:
+    - cron: '17 4 * * *'      # daily, 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  BASE_BRANCH: main
+  UPSTREAM_URL: https://github.com/GrapheneOS/hardened_malloc.git
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4          # pin to a commit hash before enabling
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Bot identity
+        run: |
+          git config user.name  "mxeneos-sync-bot"
+          git config user.email "mxeneos-sync-bot@users.noreply.github.com"
+
+      - name: Fetch upstream and refresh the mirror branch
+        run: |
+          git remote add grapheneos "$UPSTREAM_URL"
+          git fetch --no-tags grapheneos main
+          git push origin refs/remotes/grapheneos/main:refs/heads/upstream    # fast-forward only; this branch is a pure mirror
+
+      - name: Cherry-pick new upstream commits
+        id: queue
+        run: |
+          out=$(UPSTREAM_REF=grapheneos/main .mxeneos/sync-queue.sh)
+          echo "$out"
+          echo "$out" | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+          echo "$out" >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        if: steps.queue.outputs.picked != '0'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc g++ make python3
+
+      - name: Build and run upstream's tests (normal and 5.10 madvise emulation)
+        id: checks
+        continue-on-error: true       # the outcome decides between a pull request and an issue
+        if: steps.queue.outputs.picked != '0'
+        run: .mxeneos/check.sh 2>&1 | tee checks.log
+
+      - name: Push the candidate branch and open a pull request
+        if: steps.queue.outputs.picked != '0' && steps.checks.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_DIR: ${{ steps.queue.outputs.result_dir }}
+        run: |
+          git push origin "${{ steps.queue.outputs.branch }}"
+          {
+            echo "Mechanical cherry-picks of new upstream commits (nothing edited by hand)."
+            echo; echo "Picked:";   sed 's/^/- /' "$RESULT_DIR/picked.txt"
+            echo; echo "Left out because they do not apply cleanly:"; sed 's/^/- /' "$RESULT_DIR/conflicts.txt"
+            echo; echo "Upstream tests passed on a normal kernel and with MADV_DONTNEED_LOCKED failing like Linux 5.10."
+            echo "Not tested here: the device. Test on the phone before merging."
+          } > body.md
+          gh pr create --base "$BASE_BRANCH" --head "${{ steps.queue.outputs.branch }}" \
+            --title "Sync upstream hardened_malloc ($(date -u +%F))" --body-file body.md
+
+      - name: Open an issue when the tests fail
+        if: steps.queue.outputs.picked != '0' && steps.checks.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push origin "${{ steps.queue.outputs.branch }}" || true
+          gh issue create --title "Upstream sync fails the tests ($(date -u +%F))" \
+            --body "The candidate branch ${{ steps.queue.outputs.branch }} fails the tests. See the run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      - name: Report commits that need a person
+        if: steps.queue.outputs.conflicts != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT_DIR: ${{ steps.queue.outputs.result_dir }}
+        run: |
+          { echo "These upstream commits do not apply cleanly on mxeneos/base and were left out."
+            echo "Decide for each: add its hash to .mxeneos/skip-commits.txt with a reason, or adapt it by hand."
+            echo; sed 's/^/- /' "$RESULT_DIR/conflicts.txt"; } > conflicts.md
+          existing=$(gh issue list --state open --label upstream-conflicts --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then gh issue comment "$existing" --body-file conflicts.md
+          else gh issue create --label upstream-conflicts --title "Upstream commits that do not apply" --body-file conflicts.md; fi

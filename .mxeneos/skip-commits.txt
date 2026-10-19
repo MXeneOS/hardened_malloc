@@ -1,0 +1,6 @@
+# Upstream commits that are never picked: <hash> <reason>. Short hashes are fine.
+fb6d56a replace MADV_DONTNEED with MADV_DONTNEED_LOCKED: needs Linux 5.18, garnet runs 5.10
+b06faab enforce success for MADV_DONTNEED_LOCKED: depends on fb6d56a
+7e85319 always set VMA name for quarantined large allocations: conflicts, builds on b06faab (revisit)
+5cd4bb0 limit size of purging for in-place shrink path: conflicts, builds on b06faab (revisit)
+ba3db94 resolve out-of-memory edge cases with MAP_FIXED: conflicts, builds on b06faab (revisit)
