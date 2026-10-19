@@ -53,12 +53,16 @@ jobs:
 
       - name: Install build tools
         if: steps.queue.outputs.picked != '0'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc g++ make python3
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-14 g++-14 make python3     # the Makefile needs -std=c23
 
       - name: Build and run upstream's tests (normal and 5.10 madvise emulation)
         id: checks
         continue-on-error: true       # the outcome decides between a pull request and an issue
         if: steps.queue.outputs.picked != '0'
+        shell: bash                    # bash -e -o pipefail, so a failing check is not hidden by tee
+        env:
+          CC: gcc-14
+          CXX: g++-14
         run: .mxeneos/check.sh 2>&1 | tee checks.log
 
       - name: Push the candidate branch and open a pull request
