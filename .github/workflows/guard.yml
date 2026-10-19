@@ -1,0 +1,47 @@
+name: Guard
+
+# Stops changes that would make hardened_malloc abort on Linux 5.10 (garnet), such as a plain merge of
+# GrapheneOS main. Two checks, with stable names so branch protection can require them:
+#   no-madv-locked  the diff must not add MADV_DONTNEED_LOCKED to a .c or .h file
+#   tests-510       upstream's tests pass, also when MADV_DONTNEED_LOCKED fails like on Linux 5.10
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-madv-locked:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4          # pin to a commit hash before relying on it
+        with:
+          fetch-depth: 0
+      - name: No added line uses MADV_DONTNEED_LOCKED
+        shell: bash
+        run: |
+          base=${{ github.event.pull_request.base.sha || 'origin/main' }}
+          if git diff -U0 "$base" HEAD -- '*.c' '*.h' | grep -E '^\+[^+]' | grep -n 'MADV_DONTNEED_LOCKED'; then
+            echo "::error::This change adds MADV_DONTNEED_LOCKED (needs Linux 5.18; garnet runs 5.10)"
+            exit 1
+          fi
+          echo "ok: no added line uses MADV_DONTNEED_LOCKED"
+
+  tests-510:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-14 g++-14 make python3
+      - name: Build and run upstream's tests (normal, and with the 5.10 madvise shim)
+        shell: bash
+        env:
+          CC: gcc-14
+          CXX: g++-14
+          BASE_REF: ${{ github.event.pull_request.base.sha || 'origin/main' }}
+        run: .mxeneos/check.sh
